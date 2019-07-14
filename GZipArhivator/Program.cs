@@ -7,7 +7,7 @@ using System.IO.Compression;
 using System.Threading;
 
 
-namespace TestApp1
+namespace GZipArhivator
 {
     class Program
     {
@@ -116,7 +116,6 @@ namespace TestApp1
             }
         }
 
-
         /// <summary>
         /// Метод компрессии файла по частям
         /// </summary>
@@ -177,7 +176,7 @@ namespace TestApp1
                                 sizeRemaining = 0;
                             }
                             //Создаём обьект с будущими потоками
-                            ThreadForComressAndSaveData t = new ThreadForComressAndSaveData(forLock, fifoThreads, semaforForStart, originalFileStream, posirionInStream, partSize, compressedFileStream, countProcessor);
+                            Comress t = new Comress(forLock, fifoThreads, semaforForStart, originalFileStream, posirionInStream, partSize, compressedFileStream, countProcessor);
                             //Создаём поток чтения и компресии
                             Thread threadRead = new Thread(t.ReadAndCompress);
                             //Создаём поток записи
@@ -216,7 +215,6 @@ namespace TestApp1
                 Console.WriteLine("Компрессия файла {0} из {1} байт в {2} байт.", fileSource.Name, fileSource.Length.ToString(), info.Length.ToString());
             }
         }
-
 
         /// <summary>
         /// Метод декомпрессии файла по частям
@@ -269,7 +267,7 @@ namespace TestApp1
                             //Вычеесление длины компрессионного блока
                             compressedBlockLength = BitConverter.ToInt32(buffer, 4);
                             //Создаём объект с будущими потоками декомпрессии и записи
-                            ThreadForDecomressAndSaveData t = new ThreadForDecomressAndSaveData(forLock, fifoThreads, semaforForStart, semaforForREAD, originalFileStream, compressedBlockLength, startPosition, decompressedFileStream, buffer, countProcessor);
+                            Decomress t = new Decomress(forLock, fifoThreads, semaforForStart, semaforForREAD, originalFileStream, compressedBlockLength, startPosition, decompressedFileStream, buffer, countProcessor);
                             //Создаём поток чтения и декомпрессии
                             Thread threadRead = new Thread(t.ReadAndDecompress);
                             //Создаём поток записи
@@ -311,308 +309,6 @@ namespace TestApp1
                 fileSource.Name, fileSource.Length.ToString(), info.Length.ToString());
             }
 
-        }
-    }
-
-    
-    /// <summary>
-    /// Класс компресии
-    /// </summary>
-    class ThreadForComressAndSaveData
-    {
-        //Семафор для активных потоков компресии
-        static Semaphore semaforForStart;
-        //Семафор для чтения
-        static Semaphore semaforForREAD=new Semaphore(1,1);
-        //Очередь FIFO
-        Queue<Thread> fifoThreads;
-        //Обьект для синхронизации потоков
-        object forLock;
-        //Счётчик писателей
-        static int writing;
-        //Счётчик читателей
-        static int reading;
-        //Файловый поток чтения рабочего файла
-        private FileStream originalFileStream;
-        //Позиция для файлового потока чтения
-        private long posirionInStream;
-        //Размер части файла
-        private int partSize;
-        //Файловый поток записи компрессируемого файла
-        private FileStream compressedFileStream;
-        //Буффер байтов части файла
-        private byte[] bufferData;
-        //Буффер байтов компрессированной части файла
-        private byte[] compressedBufferData;
-        //Флаг возможности записи
-        private bool canWriting;
-
-        private int countProcessor;
-
-
-        //Конструктор класса
-        public ThreadForComressAndSaveData( object _forLock, Queue<Thread> _fifoThreads,Semaphore _semaforForStart, FileStream _originalFileStream,long _posirionInStream, int _partSize, FileStream _compressedFileStream, int _countProcessor) //Конструктор получает имя функции и номер до кторого ведется счет
-        {
-            forLock = _forLock;
-            semaforForStart = _semaforForStart;
-            fifoThreads = _fifoThreads;
-            originalFileStream = _originalFileStream;
-            posirionInStream = _posirionInStream;
-            partSize = _partSize;
-            compressedFileStream = _compressedFileStream;
-            canWriting = false;
-            countProcessor = _countProcessor;
-
-
-        }
-
-        //Метод потока чтения и компресии
-        public void ReadAndCompress()
-        {
-            Console.WriteLine("Поток: {0} Старт чтения и компресии!", Thread.CurrentThread.Name);
-            lock (forLock)
-            {
-                while (reading > countProcessor)
-                {
-                    Console.WriteLine("Поток: {0} Ждёт чтение и компрессию", Thread.CurrentThread.Name);
-                    //Блокировка потока
-                    Monitor.Wait(forLock);
-                }
-                //Инкрементация читателей
-                reading++;
-            }
-
-            #region Блок чтения
-            //Блок потока если происходит чтение из файла
-            semaforForREAD.WaitOne();
-            Console.WriteLine("Поток: {0} Чтение и компрессия разрешена", Thread.CurrentThread.Name);
-            //Инициализация буфера 
-            bufferData = new byte[partSize];
-            //Установка позиции чтения
-            originalFileStream.Position = posirionInStream;
-            //Чтение из файла в буфер
-            int countByteRead = originalFileStream.Read(bufferData, 0, bufferData.Length);
-            Console.WriteLine("Поток: {0} Чтение с {1} позиции по {2} позицию, требуется прочесть {3} байт, прочитано {4} байт", Thread.CurrentThread.Name, posirionInStream, originalFileStream.Position, partSize, countByteRead);
-            //Исключение
-            if (countByteRead != bufferData.Length) throw new ArgumentException("Считано неверное количество байт!");
-            //Установка позиции чтения для следующего потока
-            originalFileStream.Position = posirionInStream + partSize;
-            //Сигнал всем заблокированным потокам о выходе из семафора
-            semaforForREAD.Release();
-            #endregion
-
-            #region Блок компрессии
-            using (MemoryStream ms = new MemoryStream())
-            {
-                using (GZipStream compressionStream = new GZipStream(ms, CompressionMode.Compress, true))
-                {
-                    Console.WriteLine("Поток: {0} Компрессия с позиции {1}!", Thread.CurrentThread.Name, posirionInStream);
-                    //Компрессия
-                    compressionStream.Write(bufferData, 0, bufferData.Length); ;
-
-                }
-                //Запись из оперативы в буфер сжатых данных
-                compressedBufferData = ms.ToArray();
-                Console.WriteLine("Поток: {0} Компрессия закончена! Размер сжатого блока {1} из {2}", Thread.CurrentThread.Name, compressedBufferData.Length, countByteRead);
-                //Запись в байтовом виде, длины сжатых данных, после магического числа GZip
-                BitConverter.GetBytes(compressedBufferData.Length).CopyTo(compressedBufferData, 4);
-            }
-            #endregion
-
-            Console.WriteLine("Поток: {0} Финиш чтения и компресии!", Thread.CurrentThread.Name);
-            lock (forLock)
-            {
-                //Декрементация читателей
-                reading--;
-                //Разрешение записии
-                canWriting = true;
-                //Разблокировка ждущих потоков
-                Monitor.PulseAll(forLock);
-                
-            }
-        }
-
-        //Метод потока записи
-        public void Writer()
-        {
-            lock (forLock)
-            {
-                
-                Console.WriteLine("Поток: {0} Попытка записи", Thread.CurrentThread.Name);
-                while (((Thread.CurrentThread.Name != fifoThreads.Peek().Name) || (!canWriting))|| (writing > 0)|| (compressedBufferData == null))
-                {
-                    Console.WriteLine("Поток: {0} 8.Запись ждёт", Thread.CurrentThread.Name);
-                    //Блокировка потока
-                    Monitor.Wait(forLock);
-                }
-                //Инкрементация писателей
-                writing++;
-            }
-            Console.WriteLine("Поток: {0} 9.Запись в файл!", Thread.CurrentThread.Name);
-            //Запись компрессированных(сжатых) данных в файл
-            compressedFileStream.Write(compressedBufferData, 0, compressedBufferData.Length);
-            Console.WriteLine("Поток: {0} 10.Запись Завершена!", Thread.CurrentThread.Name);
-            lock (forLock)
-            {
-                //Удаление потока чтения и компресии из списка FIFO
-                fifoThreads.Dequeue();
-                //Декрементация писателей
-                writing--;
-                //Разблокировка ждущий потоков
-                Monitor.PulseAll(forLock);
-                //Разблокировка семафора
-                semaforForStart.Release();
-            }
-        }
-    }
-
-    class ThreadForDecomressAndSaveData//Класс потока компресии
-    {
-        //Семафор для активных потоков компресии
-        static Semaphore semaforForStart;
-        //Семафор для чтения
-        static Semaphore semaforForREAD;
-        //Очередь потоков FIFO 
-        Queue<Thread> fifoThreads;
-        //Обьект для синхронизации потоков
-        object forLock;
-        //Счётчик писателей
-        static int writing;
-        //Счётчик читателей
-        static int reading;
-        //Файловый поток чтения рабочего файла
-        private FileStream originalFileStream;
-        //Позиция начала чтения
-        private long startPosition;
-        //Длина компрессированного блока
-        private int compressedBlockLength;
-        //Файловый поток записи декомпрессированного файла
-        private FileStream decompressedFileStream;
-        //Буфер для сжатых данных
-        private byte[] buffer;
-        //Буфер для декомпрессированных данных
-        private byte[] decompressedBufferData;
-        //Флаг разрешения записи
-        private bool canWriting;
-        //Количество процесоров 
-        private int countProcessor;
-
-
-        //Конструктор класса
-        public ThreadForDecomressAndSaveData( object _forLock, Queue<Thread> _fifoThreads,Semaphore _semaforForStart, Semaphore _semaforForREAD, FileStream _originalFileStream, int _compressedBlockLength, long _startPosition, FileStream _decompressedFileStream,byte[] _buffer, int _countProcessor) //Конструктор получает имя функции и номер до кторого ведется счет
-        {
-            forLock = _forLock;
-            semaforForStart = _semaforForStart;
-            fifoThreads = _fifoThreads;
-            originalFileStream = _originalFileStream;
-            startPosition = _startPosition;
-            compressedBlockLength = _compressedBlockLength;
-            decompressedFileStream = _decompressedFileStream;
-            canWriting = false;
-            buffer = _buffer;
-            semaforForREAD = _semaforForREAD;
-            countProcessor = _countProcessor;
-        }
-
-        
-        //Метод потока чтения и декомпресии
-        public void ReadAndDecompress()
-        {
-            Console.WriteLine("Поток: {0} СТАРТ чтения и декомпрессии!", Thread.CurrentThread.Name);
-            lock (forLock)
-            {
-                while (reading > countProcessor)
-                {
-                    Console.WriteLine("Поток: {0} Ждёт чтение и декомпрессию", Thread.CurrentThread.Name);
-                    //Блокировка потока
-                    Monitor.Wait(forLock);
-                }
-                //Инкрементация читателей
-                reading++;
-                
-            }
-            Console.WriteLine("Поток: {0} Чтение и декомпрессия разрешена!", Thread.CurrentThread.Name);
-            #region Блок чтения
-            // Блок потока если происходит чтение из файла
-            semaforForREAD.WaitOne();
-            //Инициализация буфера сжатых данных
-            byte[] compressedDataArray = new byte[compressedBlockLength + 1];
-            buffer.CopyTo(compressedDataArray, 0);
-            //Установка позиции чтения
-            originalFileStream.Position = startPosition;
-            //Чтение из файла в буфер
-            int countByteRead = originalFileStream.Read(compressedDataArray, 0, compressedBlockLength);
-            Console.WriteLine("Поток: {0} Чтение с {1} позиции по {2} позицию, требуется прочесть {3} байт, прочитано {4} байт", Thread.CurrentThread.Name, startPosition, originalFileStream.Position, compressedBlockLength, countByteRead);
-            //Исключение
-            if ((countByteRead + 1) != (compressedDataArray.Length)) throw new ArgumentException(nameof(countByteRead));
-            //Определение длины части оригинального файла
-            int _dataPortionSize = BitConverter.ToInt32(compressedDataArray, compressedBlockLength - 4);
-            //Инициализация декомпрессированного файла
-            decompressedBufferData = new byte[_dataPortionSize];
-            //Сигнал всем заблокированным потокам о выходе из семафора
-            semaforForREAD.Release();
-            #endregion
-
-            #region Блок декомпрессии
-            using (MemoryStream ms = new MemoryStream(compressedDataArray))
-            {
-                using (GZipStream Decompress = new GZipStream(ms, CompressionMode.Decompress))
-                {
-                    Console.WriteLine("Поток: {0} Декомпрессия!", Thread.CurrentThread.Name);
-                    //Декомпрессия
-                    Decompress.Read(decompressedBufferData, 0, decompressedBufferData.Length);
-                    Console.WriteLine("Поток: {0} Декомпресия Закончена!", Thread.CurrentThread.Name);
-                }
-            }
-
-            #endregion
-
-            Console.WriteLine("Поток: {0} ФИНИШ чтения и декомпресии!", Thread.CurrentThread.Name);
-            lock (forLock)
-            {
-                //Декрементация читателей
-                reading--;
-                //Разблокировка ждущих потоков
-                Monitor.PulseAll(forLock);
-                //Разрешение записи
-                canWriting = true;
-                
-            }
-        }
-
-        //Метод потока записи
-        public void Writer()
-        {
-            lock (forLock)
-            {
-                
-                Console.WriteLine("Поток: {0} З. Попытка записи", Thread.CurrentThread.Name);
-                while (((Thread.CurrentThread.Name != fifoThreads.Peek().Name) || (!canWriting))|| (writing > 0)|| (decompressedBufferData == null))
-                {
-                    Console.WriteLine("Поток: {0} З. Запись ждёт", Thread.CurrentThread.Name);
-                    //Блокировка потока
-                    Monitor.Wait(forLock);
-                }
-                //Интрементация писателей
-                writing++;
-            }
-
-            Console.WriteLine("Поток: {0} З. Запись в файл!", Thread.CurrentThread.Name);
-            //Запись в файл декомпрессированных данных
-            decompressedFileStream.Write(decompressedBufferData, 0, decompressedBufferData.Length);
-            Console.WriteLine("Поток: {0} З. Запись Завершена!", Thread.CurrentThread.Name);
-
-            lock (forLock)
-            {
-                //Удаление потока из очереди FIFO
-                fifoThreads.Dequeue();
-                //Декреминтация писателей
-                writing--;
-                //Раблокировка ждущих потоков
-                Monitor.PulseAll(forLock);
-                //Сигнал всем заблокированным потокам о выходе из семафораы
-                semaforForStart.Release();
-            }
         }
     }
 }
